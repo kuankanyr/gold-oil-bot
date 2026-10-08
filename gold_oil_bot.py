@@ -16,12 +16,15 @@ Env vars:
   CAL_CURRENCIES       optional - calendar currencies, default USD,EUR,GBP,JPY,CNY,CAD,AUD,CHF
   CAL_DAILY_HOUR       optional - local hour to send the daily calendar, default 7
   ALERT_WINDOW_MIN     optional - minutes before a High-impact event to alert, default 90
+  WATCH_MINUTES        optional - same as --watch: poll every minute for N minutes, send bullet alerts
 
 Usage:
   python gold_oil_bot.py            # build and send
   python gold_oil_bot.py --dry-run  # print to terminal instead of sending
+  python gold_oil_bot.py --watch 600   # real-time mode: bullet alerts every minute for 10 hours
 """
 import argparse
+import calendar
 import datetime as dt
 import html
 import json
@@ -44,15 +47,23 @@ MAX_PER_CLASS = 4          # max headlines per asset class (gold / oil / macro)
 GOLD, OIL = ["XAUUSD", "XAUEUR"], ["WTI", "BRENT"]
 ALL = GOLD + OIL
 
-GOOGLE_NEWS = "https://news.google.com/rss/search?q={q}+when:{d}d&hl=en-US&gl=US&ceid=US:en"
+GOOGLE_NEWS = "https://news.google.com/rss/search?q={q}+when:{d}&hl=en-US&gl=US&ceid=US:en"
 NEWS_QUERIES = {
     "gold": ["gold price", "XAUUSD", "gold futures", "central bank gold buying"],
     "oil": ["crude oil price", "Brent crude", "WTI crude", "OPEC+"],
     "macro": ["Federal Reserve rates", "US dollar index", "Treasury yields", "ECB interest rates"],
 }
+# fast feeds: polled every minute in --watch mode (Google News is slower and polled less often)
 EXTRA_FEEDS = [
+    "https://www.fxstreet.com/rss/news",                 # FX / gold / oil wires, minutes after events
+    "https://www.investing.com/rss/news_11.rss",         # Investing.com commodities news
     "https://oilprice.com/rss/main",
 ]
+TRUMP_FEED = "https://trumpstruth.org/feed"              # Trump's Truth Social posts (unofficial mirror)
+TRUMP_MARKET = re.compile(
+    r"tariff|trade|china|xi\b|fed\b|federal reserve|powell|interest rate|rates|inflation|dollar|gold|oil|"
+    r"opec|drill|energy|gas price|iran|israel|russia|putin|ukraine|venezuela|sanction|war\b|strike|missile|"
+    r"ceasefire|peace|deal|embargo|blockade|hormuz|stock market|recession|treasur|bond|debt|budget|shutdown", re.I)
 
 # regex -> (tag shown in message, assets affected, weight)
 DRIVERS = [
@@ -66,6 +77,7 @@ DRIVERS = [
     (r"inventor|stockpile|\beia\b|cushing|crude draw|crude build", "Inventories", OIL, 3),
     (r"sanction|iran|russia|israel|middle east|houthi|red sea|hormuz|ukraine|\bwar\b|missile|attack|ceasefire|strike",
      "Geopolitics", ALL, 3),
+    (r"trump|white house", "Trump", ALL, 2),
     (r"tariff|trade war|recession|\bpmi\b|\bgdp\b|china demand|stimulus", "Growth/demand", ALL, 2),
     (r"central bank.*(buy|purchas)|gold reserve|pboc|\betf\b", "Gold flows", GOLD, 2),
     (r"safe.haven|risk.off|risk aversion", "Safe-haven", GOLD, 2),
@@ -214,13 +226,55 @@ def _same_story(x, y):
     return x["cls"] == y["cls"] and x["tags"] and x["tags"] == y["tags"] and _similar(x["title"], y["title"], 0.35)
 
 
-def fetch_news(lookback_h):
+def _entry_time(e):
+    ts = e.get("published_parsed") or e.get("updated_parsed")
+    if ts:
+        return dt.datetime.fromtimestamp(calendar.timegm(ts), dt.timezone.utc)
+    raw = e.get("published") or e.get("updated")
+    if raw:                                                  # e.g. Investing.com "2026-10-07 20:36:35"
+        try:
+            t = dt.datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+            return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
+def _trump_items(cutoff):
+    out = []
+    try:
+        feed = _get_feed(TRUMP_FEED)
+    except Exception as e:
+        print(f"[warn] trump feed failed: {e}", file=sys.stderr)
+        return out
+    for e in feed.entries:
+        published = _entry_time(e)
+        if not published or published < cutoff:
+            continue
+        text = re.sub(r"<[^>]+>", " ", html.unescape(e.get("description") or e.get("summary") or ""))
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text or not TRUMP_MARKET.search(text):
+            continue                                         # skip posts with nothing market-related
+        score, tags, assets, _ = score_headline(text)
+        short = text if len(text) <= 220 else text[:217].rsplit(" ", 1)[0] + "…"
+        out.append({
+            "title": short, "link": e.get("link", ""), "source": "Truth Social",
+            "published": published, "score": score + 4, "tags": ["Trump"] + [t for t in tags if t != "Trump"],
+            "assets": assets or set(ALL), "cls": "macro", "trump": True,
+            "key": "trump:" + (e.get("guid") or e.get("link") or short[:60]),
+        })
+    return out
+
+
+def fetch_news(lookback_h, include_google=True):
     now = dt.datetime.now(dt.timezone.utc)
     cutoff = now - dt.timedelta(hours=lookback_h)
-    days = max(1, math.ceil(lookback_h / 24))
-    urls = [GOOGLE_NEWS.format(q=quote_plus(q), d=days) for qs in NEWS_QUERIES.values() for q in qs] + EXTRA_FEEDS
+    window = f"{max(1, math.ceil(lookback_h))}h" if lookback_h < 24 else f"{math.ceil(lookback_h / 24)}d"
+    urls = list(EXTRA_FEEDS)
+    if include_google:
+        urls += [GOOGLE_NEWS.format(q=quote_plus(q), d=window) for qs in NEWS_QUERIES.values() for q in qs]
 
-    seen_keys, items = set(), []
+    seen_keys, items = set(), _trump_items(cutoff)
     for url in urls:
         try:
             feed = _get_feed(url)
@@ -228,11 +282,8 @@ def fetch_news(lookback_h):
             print(f"[warn] feed failed: {url} ({e})", file=sys.stderr)
             continue
         for e in feed.entries:
-            ts = e.get("published_parsed") or e.get("updated_parsed")
-            if not ts:
-                continue
-            published = dt.datetime.fromtimestamp(time.mktime(ts), dt.timezone.utc)
-            if published < cutoff:
+            published = _entry_time(e)
+            if not published or published < cutoff or published > now + dt.timedelta(minutes=10):
                 continue
             source = (e.get("source") or {}).get("title") or feed.feed.get("title", "")
             title = _clean_title(e.get("title"), source)
@@ -350,6 +401,8 @@ NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️�
 
 def _ago(published):
     mins = int((dt.datetime.now(dt.timezone.utc) - published).total_seconds() // 60)
+    if mins < 1:
+        return "just now"
     return f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago"
 
 
@@ -603,6 +656,79 @@ def send_telegram(text):
             raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
 
 
+# ----------------------------------------------------------------------------- flash alerts (--watch)
+
+def _asset_icon(it):
+    if it.get("trump"):
+        return "🚨"
+    return {"gold": "🟡", "oil": "🛢"}.get(it["cls"], "🌐")
+
+
+def flash_reads(items):
+    """{index: 'short bias'} - one quick Claude call per batch, optional."""
+    if not os.getenv("ANTHROPIC_API_KEY") or not items:
+        return {}
+    lines = "\n".join(f"[{i}] {it['title']}" for i, it in enumerate(items, 1))
+    prompt = f"""Breaking headlines for a gold/oil trader:
+{lines}
+
+For each, give the likely immediate impact on gold and/or oil. Return ONLY JSON:
+{{"1": "🟢 Gold / 🔴 Oil: tariffs = risk-off", ...}}
+Use 🟢 for up, 🔴 for down, ⚪ for unclear. Max 9 words per item. No invented facts."""
+    try:
+        text = call_claude(prompt, 500)
+        data = json.loads(text[text.index("{"): text.rindex("}") + 1])
+        return {int(k): str(v) for k, v in data.items()}
+    except Exception as e:
+        print(f"[warn] flash read failed: {e}", file=sys.stderr)
+        return {}
+
+
+def build_flash(items, reads):
+    now = dt.datetime.now(TZ)
+    out = [f"⚡ <b>{now:%H:%M}</b>"]
+    for i, it in enumerate(items, 1):
+        link = html.escape(it["link"], quote=True)
+        title = html.escape(it["title"])
+        head = f"<b>TRUMP:</b> {title}" if it.get("trump") else title
+        line = f"• {_asset_icon(it)} <a href=\"{link}\">{head}</a> <i>· {html.escape(it['source'] or '')} {_ago(it['published'])}</i>"
+        if reads.get(i):
+            line += f"\n   ↳ {html.escape(reads[i])}"
+        out.append(line)
+    return "\n".join(out)
+
+
+def watch(minutes, state_path, poll_s=60, google_every=5, max_age_min=90):
+    """Poll fast feeds every minute (Google News every few minutes) and push new items as bullets."""
+    end = time.time() + minutes * 60
+    state = load_state(state_path)
+    prices, prices_at, n = {}, 0, 0
+    while time.time() < end:
+        n += 1
+        try:
+            if time.time() - prices_at > 900:                    # refresh prices every 15 min (calendar)
+                try:
+                    prices, prices_at = fetch_prices(), time.time()
+                except Exception as e:
+                    print(f"[warn] prices failed: {e}", file=sys.stderr)
+                    prices_at = time.time()
+            if not os.getenv("NO_CALENDAR") and n % 5 == 1:     # calendar check every ~5 min
+                for msg, keys in run_calendar(prices, state):
+                    send_telegram(msg)
+                    save_state(state_path, state, [], keys)
+
+            items = fetch_news(max_age_min / 60, include_google=(n % google_every == 1))
+            fresh = sorted((it for it in items if it["key"] not in state), key=lambda x: x["published"])
+            if fresh:
+                fresh = fresh[-8:]                               # never flood: newest 8 per poll
+                send_telegram(build_flash(fresh, flash_reads(fresh)))
+                save_state(state_path, state, fresh)
+                print(f"[{dt.datetime.now(TZ):%H:%M:%S}] sent {len(fresh)}")
+        except Exception as e:
+            print(f"[warn] poll failed: {e}", file=sys.stderr)
+        time.sleep(max(0, min(poll_s, end - time.time())))
+
+
 # ----------------------------------------------------------------------------- main
 
 def main():
@@ -611,7 +737,15 @@ def main():
     ap.add_argument("--lookback", type=int, default=int(os.getenv("LOOKBACK_HOURS", "12")))
     ap.add_argument("--calendar", action="store_true", help="send today's calendar now (testing)")
     ap.add_argument("--no-calendar", action="store_true", help="skip the economic calendar")
+    ap.add_argument("--watch", type=float, metavar="MINUTES", default=float(os.getenv("WATCH_MINUTES", "0")),
+                    help="keep running for N minutes, pushing new headlines as bullet alerts")
     args = ap.parse_args()
+
+    if args.watch > 0:
+        if args.no_calendar:
+            os.environ["NO_CALENDAR"] = "1"
+        watch(args.watch, os.getenv("STATE_FILE", ".seen.json"))
+        return
 
     lookback = args.lookback
     now_utc = dt.datetime.now(dt.timezone.utc)
