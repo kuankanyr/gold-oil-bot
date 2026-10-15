@@ -41,6 +41,11 @@ INSTRUMENTS = {
     "WTI": ("CL=F", "long", 2),
     "EURUSD": ("EURUSD=X", "both", 4),
     "USDJPY": ("USDJPY=X", "both", 2),
+    # indices - longs only while Daily is up (your GER40 preset rule; US indices not yet backtested)
+    "GER40": ("^GDAXI", "long", 0),    # DAX cash index: Frankfurt hours only
+    "US500": ("ES=F", "long", 0),      # S&P 500 futures (~23h/day)
+    "US30": ("YM=F", "long", 0),       # Dow futures
+    "US100": ("NQ=F", "long", 0),      # Nasdaq 100 futures
 }
 STATE_FILE = os.environ.get("REGIME_STATE_FILE", "regime_state.json")
 
