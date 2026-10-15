@@ -237,7 +237,7 @@ def build_message(rows, turned_on, turned_off):
     notes = []
     for r in rows:
         if r["favorable"]:
-            extra = "re-entries ON" if r["re_on"] else "signals only (Daily ADX < 20)"
+            extra = "re-entries ON" if r["re_on"] else "signals only (Daily ADX &lt; 20)"
             align = ", 4H+30m aligned" if r["aligned"] else ""
             notes.append(f"🟢 <b>{r['name']}</b> {r['side']} — {extra}{align}, Andean {r['andean']}")
         else:
@@ -257,7 +257,8 @@ def send(text):
     r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
                       json={"chat_id": chat, "text": text, "parse_mode": "HTML",
                             "disable_web_page_preview": True}, timeout=30)
-    r.raise_for_status()
+    if not r.ok:
+        sys.exit(f"Telegram error {r.status_code}: {r.text}")
 
 
 # ------------------------------------------------------------------ main
