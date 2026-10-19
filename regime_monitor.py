@@ -19,6 +19,7 @@ Env vars:
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   (required to send)
   NOTIFY_OFF=1        also message when an instrument stops being favorable
   FORCE_SEND=1        send the table now regardless of changes (test / manual run)
+  SEND_ALWAYS=1       send the table on every run (hourly update), skipped while all markets are closed
   DRY_RUN=1           print instead of sending
 """
 import json
@@ -307,7 +308,8 @@ def main(fetcher=fetch):
               f"{'STALE' if r['stale'] else ''} {r['reasons']}")
 
     notify = bool(turned_on) or (os.environ.get("NOTIFY_OFF") == "1" and bool(turned_off))
-    if os.environ.get("FORCE_SEND") == "1" or notify:
+    always = os.environ.get("SEND_ALWAYS") == "1" and bool(live)   # no messages over the weekend
+    if os.environ.get("FORCE_SEND") == "1" or notify or always:
         send(build_message(rows, turned_on, turned_off))
         print("sent")
     else:
