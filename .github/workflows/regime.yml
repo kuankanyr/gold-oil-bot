@@ -2,7 +2,7 @@ name: FLI regime monitor
 
 on:
   schedule:
-    - cron: "2 * * * 0-5"   # every hour at :02 (Sun-Fri UTC); weekend runs stay silent
+    - cron: "7,37 * * * 0-5"   # every 30 min at :07/:37 (off-peak minutes, GitHub drops fewer runs); weekends silent
   workflow_dispatch:
     inputs:
       force_send:
@@ -36,7 +36,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FORCE_SEND: ${{ github.event_name == 'workflow_dispatch' && inputs.force_send && '1' || '0' }}
           NOTIFY_OFF: "0"
-          SEND_ALWAYS: "1"   # hourly table; set "0" to only message when a regime turns favorable
+          SEND_ALWAYS: "1"   # table every run; set "0" to only message when a regime turns favorable
         run: python regime_monitor.py
 
       - name: Save state
