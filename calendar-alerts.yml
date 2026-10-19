@@ -1,0 +1,26 @@
+name: Calendar alerts
+
+on:
+  schedule:
+    - cron: "15 0 * * *"   # 07:15 Bangkok every day
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install google-auth requests
+      - name: Telegram alerts
+        run: python calendar_alerts.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Google Calendar sync
+        run: python calendar_sync.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}

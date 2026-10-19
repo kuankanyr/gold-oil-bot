@@ -25,8 +25,8 @@ OIL_WORDS = ("crude", "oil", "opec", "natural gas")
 
 # Which events to alert on
 RULES = {
-    "USD": {"High"},          # add "Medium" here if you want more alerts
-    "EUR": {"High"},
+    "USD": {"High", "Medium"},   # remove "Medium" for fewer alerts
+    "EUR": {"High", "Medium"},
 }
 
 
