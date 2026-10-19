@@ -2,7 +2,7 @@ name: Calendar alerts
 
 on:
   schedule:
-    - cron: "0 1 * * *"   # 08:00 Bangkok every day
+    - cron: "0 1 * * *"   # 07:15 Bangkok every day
   workflow_dispatch:
 
 jobs:
