@@ -2,14 +2,14 @@
   "favorable": {
     "XAUUSD": false,
     "XAUEUR": false,
-    "BRENT": false,
+    "BRENT": true,
     "WTI": false,
     "EURUSD": false,
-    "USDJPY": true,
+    "USDJPY": false,
     "US500": false,
     "US30": false,
     "US100": false,
     "GER40": false
   },
-  "updated": "2026-10-21T18:13:37.815101+00:00"
+  "updated": "2026-10-21T21:56:58.803309+00:00"
 }
