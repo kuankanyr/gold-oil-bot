@@ -4,12 +4,12 @@
     "XAUEUR": true,
     "BRENT": true,
     "WTI": false,
-    "EURUSD": true,
+    "EURUSD": false,
     "USDJPY": false,
     "US500": false,
     "US30": false,
     "US100": false,
     "GER40": false
   },
-  "updated": "2026-10-23T11:59:12.057303+00:00"
+  "updated": "2026-10-23T16:56:48.057544+00:00"
 }
