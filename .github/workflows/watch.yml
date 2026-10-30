@@ -1,0 +1,58 @@
+name: Gold & Oil live alerts
+
+# Real-time mode: polls FXStreet / Investing / OilPrice / Truth Social every minute
+# (Google News every 5 min) and pushes new headlines as bullet alerts.
+# Each run lasts ~5.5h (GitHub's job limit is 6h), then starts the next run itself,
+# so there is no hourly gap. The crons below are only a safety net in case the chain breaks.
+
+on:
+  schedule:
+    - cron: "2 22 * * 0"        # Sun 22:02 UTC (Mon 05:02 Bangkok) - before oil reopens
+    - cron: "2 */6 * * 1-5"     # every 6h Mon-Fri as a backup restart
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: write                # lets the run start the next run
+
+concurrency:
+  group: live-alerts            # never two watchers at once (no double alerts)
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Restore sent-headline memory
+        uses: actions/cache@v4
+        with:
+          path: .seen.json
+          key: live-seen-${{ github.run_id }}
+          restore-keys: live-seen-
+
+      - name: Watch and alert
+        run: python -u gold_oil_bot.py --watch 330
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Start the next run (skip over the weekend)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dow=$(date -u +%u); hr=$(date -u +%H)
+          # stop after Fri 21:00 UTC and all Saturday; the Sunday cron restarts it
+          if [ "$dow" = "6" ] || { [ "$dow" = "5" ] && [ "$hr" -ge 21 ]; }; then
+            echo "Weekend - not chaining"; exit 0
+          fi
+          gh workflow run watch.yml --ref "${{ github.ref_name }}"
