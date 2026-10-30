@@ -255,6 +255,10 @@ def _trump_items(cutoff):
         text = re.sub(r"\s+", " ", text).strip()
         if not text or not TRUMP_MARKET.search(text):
             continue                                         # skip posts with nothing market-related
+        if re.match(r"RT\s*@", text) or re.match(r"[A-Z][A-Z .'\-]{3,}:", text):
+            continue                                         # reposts and shared op-eds ("GREGG JARRETT: ...")
+        if len(re.sub(r"https?://\S+|www\.\S+|@\s?\w+", "", text).strip()) < 40:
+            continue                                         # mostly a link / tags, no actual statement
         score, tags, assets, _ = score_headline(text)
         short = text if len(text) <= 220 else text[:217].rsplit(" ", 1)[0] + "…"
         out.append({
@@ -378,7 +382,7 @@ Headlines from the last {lookback_h} hours:
 {headline_lines}
 
 Return ONLY JSON, no other text, in this shape:
-{{"items": [{{"i": 1, "t": "headline rewritten in max 8 words, key numbers kept, no filler", "asset": "Gold" | "Oil" | "Brent" | "WTI" | "Gold & Oil" | "XAUEUR", "bias": "Bullish" | "Bearish" | "Mixed" | "Neutral", "why": "the mechanism in max 10 words (e.g. softer USD supports gold)"}}],
+{{"items": [{{"i": 1, "asset": "Gold" | "Oil" | "Gold & Oil" | "XAUEUR", "bias": "Bullish" | "Bearish" | "Mixed" | "Neutral", "why": "one sentence, max 25 words, the mechanism (e.g. lower rate expectations weaken USD and support non-yielding gold)"}}],
  "overall": {{"gold": "Bullish|Bearish|Neutral - max 15 words", "oil": "Bullish|Bearish|Neutral - max 15 words"}}}}
 
 Rules: one item per headline number; reason only from the headline text and numbers above; if a headline's impact is unclear, use "Neutral" and say why; never invent facts."""
@@ -399,51 +403,11 @@ ARROW = {"Up": "▲", "Down": "▼", "Mixed": "◆"}
 NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
 
-def short_title(title, n=70):
-    """Fallback headline trim when no AI rewrite: drop kickers/sub-clauses, cap length."""
-    t = re.sub(r"\s*[|–—]\s.*$", "", title).strip()               # "Oil rises | Reuters", "X — analysis"
-    t = re.sub(r"^(update \d+|exclusive|breaking|analysis|wrapup \d*)[:\-]\s*", "", t, flags=re.I)
-    if len(t) > n:
-        t = t[:n].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
-    return t
-
-
-SIG_ARROW = {"up": "▲", "down": "▼", "mixed": "◆"}
-SIG_ICON = {"up": "🟢", "down": "🔴", "mixed": "🟡"}
-
-
-def _asset_label(it):
-    if it.get("trump"):
-        return "TRUMP"
-    return {"gold": "GOLD", "oil": "OIL"}.get(it["cls"], "MACRO")
-
-
-def signal_line(it, rd):
-    """'🟢 <b>OIL ▲</b> OPEC+ delays output hike' - signal first, short headline after."""
-    rd = rd or {}
-    d = str(rd.get("dir", "")).lower()
-    if d not in SIG_ARROW:
-        d = _direction(it["title"]) or ""
-    asset = str(rd.get("asset") or _asset_label(it)).upper()
-    head = str(rd.get("t") or short_title(it["title"]))
-    icon = SIG_ICON.get(d, "⚪")
-    arrow = f" {SIG_ARROW[d]}" if d in SIG_ARROW else ""
-    link = html.escape(it["link"], quote=True)
-    return f"{icon} <b>{html.escape(asset)}{arrow}</b>  <a href=\"{link}\">{html.escape(head)}</a>"
-
-
-def meta_line(it, rd):
-    why = (rd or {}).get("why")
-    bits = ([f"↳ {html.escape(str(why))}"] if why else []) + [
-        f"<i>{html.escape(it['source'] or '')} · {_ago(it['published'])}</i>"]
-    return "    " + " — ".join(bits)
-
-
 def _ago(published):
     mins = int((dt.datetime.now(dt.timezone.utc) - published).total_seconds() // 60)
     if mins < 1:
-        return "now"
-    return f"{mins}m" if mins < 60 else f"{mins // 60}h"
+        return "just now"
+    return f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago"
 
 
 def _price_line(prices, assets):
@@ -468,6 +432,43 @@ def _snapshot(prices):
     return gold + "\n" + oil
 
 
+SECTIONS = [("gold", "🟡 <b>GOLD</b>"), ("oil", "🛢 <b>OIL</b>"), ("macro", "🌐 <b>MACRO / TRUMP</b>")]
+
+
+def group_news(news):
+    """Order items Gold -> Oil -> Macro, newest first inside each group."""
+    rank = {c: i for i, (c, _) in enumerate(SECTIONS)}
+    return sorted(news, key=lambda it: (rank.get(it["cls"], 9), -it["published"].timestamp()))
+
+
+def _item_block(i, it, rd):
+    num = NUMS[i - 1] if i <= len(NUMS) else f"{i}."
+    link = html.escape(it["link"], quote=True)
+    title = html.escape(it["title"])
+    lines = [f"{num} <b>{'TRUMP: ' if it.get('trump') else ''}{title}</b>",
+             f"🗞 <a href=\"{link}\">{html.escape(it['source'] or 'Source')}</a> · {_ago(it['published'])}"]
+    if rd:
+        bias = str(rd.get("bias", "Neutral"))
+        icon = BIAS_ICON.get(bias.lower(), "⚪")
+        lines.append(f"🧭 {icon} <b>{html.escape(bias)} {html.escape(str(rd.get('asset', '')))}</b> — "
+                     f"{html.escape(str(rd.get('why', '')))}")
+    else:
+        lines.append(f"🧭 Driver: {html.escape(' · '.join(it['tags']) or 'Direct price news')}")
+    return lines
+
+
+def _sections(news, reads):
+    """news must already be in group_news() order so numbers match the reads."""
+    out, current = [], None
+    for i, it in enumerate(news, 1):
+        if it["cls"] != current:
+            current = it["cls"]
+            out.append(dict(SECTIONS).get(current, "🌐 <b>OTHER</b>"))
+        out += _item_block(i, it, reads.get(i))
+        out.append("")
+    return out
+
+
 def build_message(prices, news, reads, overall, lookback_h):
     now = dt.datetime.now(TZ)
     out = [f"📰 <b>Gold &amp; Oil News</b> — <i>{now:%a %d %b, %H:%M}</i>", _snapshot(prices), ""]
@@ -476,14 +477,7 @@ def build_message(prices, news, reads, overall, lookback_h):
         out.append(f"No new market-moving headlines in the last {lookback_h}h.")
         return "\n".join(out)
 
-    for i, it in enumerate(news, 1):
-        rd = dict(reads.get(i) or {})
-        rd.setdefault("dir", {"bullish": "up", "bearish": "down", "mixed": "mixed"}.get(
-            str(rd.get("bias", "")).lower(), ""))
-        if not rd.get("why") and it["tags"]:
-            rd["why"] = " · ".join(it["tags"])
-        out.append(signal_line(it, rd))
-        out.append(meta_line(it, rd))
+    out += _sections(news, reads)
 
     if overall:
         out.append("📊 <b>Overall</b>")
@@ -699,37 +693,46 @@ def _asset_icon(it):
 
 
 def flash_reads(items):
-    """{index: {"t","asset","dir","why"}} - one quick Claude call per batch, optional."""
+    """{index: 'short bias'} - one quick Claude call per batch, optional."""
     if not os.getenv("ANTHROPIC_API_KEY") or not items:
         return {}
     lines = "\n".join(f"[{i}] {it['title']}" for i, it in enumerate(items, 1))
     prompt = f"""Breaking headlines for a gold/oil trader:
 {lines}
 
-For each, rewrite it so a trader gets it in one glance, and give the likely immediate price impact.
-Return ONLY JSON:
-{{"1": {{"t": "OPEC+ delays Dec output hike", "asset": "Oil", "dir": "up", "why": "tighter supply"}}, ...}}
-- t: the news itself, max 8 words, keep key numbers/names, no source names, no filler ("amid", "as", "analysts say")
-- asset: the one most affected: "Gold", "Oil", "Brent", "WTI", "XAUEUR" or "Gold & Oil"
-- dir: "up", "down" or "mixed" for that asset
-- why: the mechanism, max 5 words
-No invented facts."""
+For each, give the likely immediate impact on gold and/or oil. Return ONLY JSON:
+{{"1": "🟢 Gold / 🔴 Oil: tariffs = risk-off", ...}}
+Use 🟢 for up, 🔴 for down, ⚪ for unclear. Max 9 words per item. No invented facts."""
     try:
-        text = call_claude(prompt, 800)
+        text = call_claude(prompt, 500)
         data = json.loads(text[text.index("{"): text.rindex("}") + 1])
-        return {int(k): v for k, v in data.items() if isinstance(v, dict)}
+        return {int(k): str(v) for k, v in data.items()}
     except Exception as e:
         print(f"[warn] flash read failed: {e}", file=sys.stderr)
         return {}
+
+
+def build_live(prices, items, reads):
+    now = dt.datetime.now(TZ)
+    out = [f"⚡ <b>Gold &amp; Oil Live</b> — <i>{now:%H:%M}</i>"]
+    if prices:
+        out.append(_snapshot(prices))
+    out.append("")
+    out += _sections(items, reads)
+    return "\n".join(out).rstrip()
 
 
 def build_flash(items, reads):
     now = dt.datetime.now(TZ)
     out = [f"⚡ <b>{now:%H:%M}</b>"]
     for i, it in enumerate(items, 1):
-        rd = reads.get(i)
-        out.append(("🚨 " if it.get("trump") else "") + signal_line(it, rd))
-        out.append(meta_line(it, rd))
+        link = html.escape(it["link"], quote=True)
+        title = html.escape(it["title"])
+        head = f"<b>TRUMP:</b> {title}" if it.get("trump") else title
+        line = f"• {_asset_icon(it)} <a href=\"{link}\">{head}</a> <i>· {html.escape(it['source'] or '')} {_ago(it['published'])}</i>"
+        if reads.get(i):
+            line += f"\n   ↳ {html.escape(reads[i])}"
+        out.append(line)
     return "\n".join(out)
 
 
@@ -755,8 +758,9 @@ def watch(minutes, state_path, poll_s=60, google_every=5, max_age_min=90):
             items = fetch_news(max_age_min / 60, include_google=(n % google_every == 1))
             fresh = sorted((it for it in items if it["key"] not in state), key=lambda x: x["published"])
             if fresh:
-                fresh = fresh[-8:]                               # never flood: newest 8 per poll
-                send_telegram(build_flash(fresh, flash_reads(fresh)))
+                fresh = group_news(fresh[-8:])                   # never flood: newest 8 per poll
+                reads, _ = llm_reads(prices, fresh, max_age_min / 60)
+                send_telegram(build_live(prices, fresh, reads))
                 save_state(state_path, state, fresh)
                 print(f"[{dt.datetime.now(TZ):%H:%M:%S}] sent {len(fresh)}")
         except Exception as e:
@@ -803,7 +807,7 @@ def main():
             outgoing.append((msg, [], keys))
 
     # 2) headlines
-    news = [it for it in fetch_news(lookback) if it["key"] not in state]
+    news = group_news([it for it in fetch_news(lookback) if it["key"] not in state])
     if news or os.getenv("SKIP_EMPTY") != "1":
         reads, overall = llm_reads(prices, news, lookback)
         outgoing.append((build_message(prices, news, reads, overall, lookback), news, []))
