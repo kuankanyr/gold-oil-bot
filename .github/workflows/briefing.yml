@@ -2,7 +2,7 @@ name: Gold & Oil news
 
 on:
   schedule:
-    - cron: "5 * * * 1-5"
+    - cron: "3 0,7,13 * * 1-5"   # digest 07:03 / 14:03 / 20:03 Bangkok; live alerts come from watch.yml
   workflow_dispatch: {}
 
 jobs:
@@ -19,13 +19,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .seen.json
-          key: seen-${{ github.run_id }}
-          restore-keys: seen-
+          key: digest-seen-${{ github.run_id }}
+          restore-keys: digest-seen-
       - name: Send news
-        run: python gold_oil_bot.py
+        run: python gold_oil_bot.py --no-calendar
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          LOOKBACK_HOURS: "6"
+          LOOKBACK_HOURS: "12"
           SKIP_EMPTY: "1"
