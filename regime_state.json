@@ -5,11 +5,11 @@
     "BRENT": false,
     "WTI": false,
     "EURUSD": false,
-    "USDJPY": true,
+    "USDJPY": false,
     "US500": false,
     "US30": false,
     "US100": false,
     "GER40": true
   },
-  "updated": "2026-11-22T20:59:39.549820+00:00"
+  "updated": "2026-11-23T01:32:33.359418+00:00"
 }
